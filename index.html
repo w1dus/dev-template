@@ -735,14 +735,36 @@ body:not(.editing) .page-tools{ display:none; }
     return c;
   }
 
+  /* ---------- 저장소: IndexedDB (대용량, 이미지 넣어도 안 날아감) + localStorage 폴백 ---------- */
+  var IDB_DB = 'jobofGuide', IDB_STORE = 'kv';
+  function idbOpen(){
+    return new Promise(function(res, rej){
+      if(!window.indexedDB){ rej('no-idb'); return; }
+      var r = indexedDB.open(IDB_DB, 1);
+      r.onupgradeneeded = function(){ r.result.createObjectStore(IDB_STORE); };
+      r.onsuccess = function(){ res(r.result); };
+      r.onerror = function(){ rej(r.error); };
+    });
+  }
+  function idbSet(k, v){ return idbOpen().then(function(db){ return new Promise(function(res, rej){
+    var tx = db.transaction(IDB_STORE, 'readwrite'); tx.objectStore(IDB_STORE).put(v, k);
+    tx.oncomplete = function(){ res(); }; tx.onerror = function(){ rej(tx.error); }; }); }); }
+  function idbGet(k){ return idbOpen().then(function(db){ return new Promise(function(res, rej){
+    var rq = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(k);
+    rq.onsuccess = function(){ res(rq.result); }; rq.onerror = function(){ rej(rq.error); }; }); }); }
+  function idbDel(k){ return idbOpen().then(function(db){ return new Promise(function(res, rej){
+    var tx = db.transaction(IDB_STORE, 'readwrite'); tx.objectStore(IDB_STORE).delete(k);
+    tx.oncomplete = function(){ res(); }; tx.onerror = function(){ rej(tx.error); }; }); }); }
+  function lsGet(){ try{ var r = localStorage.getItem(KEY); return r ? JSON.parse(r) : null; }catch(e){ return null; } }
+
   /* ---------- 저장 / 불러오기 ---------- */
   function flash(msg){ saveState.textContent = msg; setTimeout(function(){ saveState.textContent=''; }, 1600); }
   function save(){
-    try{
-      var data = { html: cleanDoc().innerHTML, brand: cBrand.value, accent: cAccent.value, client: clientInput.value };
-      localStorage.setItem(KEY, JSON.stringify(data));
-      flash('✓ 저장됨');
-    }catch(err){ flash('⚠ 용량초과 — HTML로 내보내세요'); }
+    var data = { html: cleanDoc().innerHTML, brand: cBrand.value, accent: cAccent.value, client: clientInput.value };
+    idbSet(KEY, data).then(function(){ flash('✓ 저장됨'); }).catch(function(){
+      try{ localStorage.setItem(KEY, JSON.stringify(data)); flash('✓ 저장됨'); }
+      catch(e){ flash('⚠ 저장 실패 — HTML로 내보내세요'); }
+    });
   }
   var saveTimer;
   document.addEventListener('input', function(e){
@@ -752,21 +774,20 @@ body:not(.editing) .page-tools{ display:none; }
   document.getElementById('btnSave').onclick = save;
 
   function load(){
-    var raw = localStorage.getItem(KEY);
-    if(!raw) return false;
-    try{
-      var d = JSON.parse(raw);
-      doc.innerHTML = d.html;
-      if(d.brand){ cBrand.value=d.brand; } if(d.accent){ cAccent.value=d.accent; }
-      if(d.client){ clientInput.value=d.client; }
-      applyColors();
-      return true;
-    }catch(e){ return false; }
+    return idbGet(KEY).then(function(d){ return d || lsGet(); }).catch(function(){ return lsGet(); })
+      .then(function(d){
+        if(!d) return false;
+        doc.innerHTML = d.html;
+        if(d.brand){ cBrand.value=d.brand; } if(d.accent){ cAccent.value=d.accent; }
+        if(d.client){ clientInput.value=d.client; }
+        applyColors();
+        return true;
+      });
   }
 
   document.getElementById('btnReset').onclick = function(){
     if(confirm('모든 수정 내용을 지우고 처음 상태로 되돌릴까요?')){
-      localStorage.removeItem(KEY); location.reload();
+      idbDel(KEY).catch(function(){}).then(function(){ try{ localStorage.removeItem(KEY); }catch(e){} location.reload(); });
     }
   };
 
@@ -859,11 +880,8 @@ body:not(.editing) .page-tools{ display:none; }
   });
 
   /* ---------- 시작 ---------- */
-  load();
-  applyEditable(doc);
-  addPageTools();
-  decorate();
-  refresh();
+  function init(){ applyEditable(doc); addPageTools(); decorate(); refresh(); }
+  load().then(init).catch(init);
 })();
 </script>
 </body>
